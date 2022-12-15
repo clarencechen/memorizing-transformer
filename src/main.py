@@ -44,74 +44,34 @@ def print_summary(summary, save_if_improved, model, checkpoint_path):
     summary["loss"] = []
     summary["accu"] = []
 
-def step_LRA(model, optimizer, lr_scheduler, ds_iter,amp_scaler,
-             accumu_steps, init_t, summary, component, step_idx, writer=None):
-    t0 = time.time()
+def step_LRA(model, optimizer, lr_scheduler, ds_iter, accelerator,
+             init_t, summary, component, step_idx, writer=None):
 
+    t0 = time.time()
     optimizer.zero_grad()
 
-    _, batch = next(ds_iter[component])
-    for key in batch:
-        batch[key] = batch[key].cuda()
+    _, batch = next(ds_iter)
+    batch_size = batch[list(batch.keys())[0]].size(0)
 
     if component == "train":
-        outputs = {}
+        with accelerator.accumulate(model):
+            outputs = model(**batch)
+            outputs["loss"] += loss.item()
+            accelerator.backwards(loss)
+            accelerator.clip_grad_value_(model.parameters(), clip_value=1) # Gradient Clipping
 
-        partial_inputs_list = [{} for _ in range(accumu_steps)]
-        for key in batch:
-            for idx, inp in enumerate(torch.chunk(batch[key], accumu_steps, dim = 0)):
-                partial_inputs_list[idx][key] = inp
-
-        for partial_inputs in partial_inputs_list:
-            # with torch.cuda.amp.autocast():
-            partial_outputs = model(**partial_inputs)
-
-            for key in partial_outputs:
-                partial_outputs[key] = partial_outputs[key].mean() / accumu_steps
-                if key not in outputs:
-                    outputs[key] = partial_outputs[key]
-                else:
-                    outputs[key] += partial_outputs[key]
-
-
-            amp_scaler.scale(partial_outputs["loss"]).backward() # loss.backward()
-
-        # https://pytorch.org/tutorials/recipes/recipes/amp_recipe.html
-        amp_scaler.unscale_(optimizer)
-
-
-
-        nn.utils.clip_grad_value_(model.parameters(), clip_value=1) # Gradient Clipping
-
-
-        amp_scaler.step(optimizer)
-        amp_scaler.update()
-        lr_scheduler.step()
+            optimizer.step()
+            lr_scheduler.step()
     else:
-        with torch.no_grad():
-            outputs = {}
-
-            partial_inputs_list = [{} for _ in range(accumu_steps)]
-            for key in batch:
-                for idx, inp in enumerate(torch.chunk(batch[key], accumu_steps, dim = 0)):
-                    partial_inputs_list[idx][key] = inp
-
-            for partial_inputs in partial_inputs_list:
-                partial_outputs = model(**partial_inputs)
-                for key in partial_outputs:
-                    partial_outputs[key] = partial_outputs[key].mean() / accumu_steps
-                    if key not in outputs:
-                        outputs[key] = partial_outputs[key]
-                    else:
-                        outputs[key] += partial_outputs[key]
+        with torch.no_grad(), accelerator.accumulate(model):
+            outputs = model(**batch)
 
     t1 = time.time()
 
-    batch_size = batch[list(batch.keys())[0]].size(0)
     t_escape = t1 - t0
     learning_rate = optimizer.param_groups[0]["lr"]
-    loss = outputs["loss"].data.item()
-    accu = outputs["accu"].data.item()
+    loss = accelerator.gather_for_metrics(outputs["loss"]).data.item()
+    accu = accelerator.gather_for_metrics(outputs["accu"]).data.item()
     time_since_start = time.time() - init_t
 
     if step_idx%100==0:
@@ -127,10 +87,9 @@ def step_LRA(model, optimizer, lr_scheduler, ds_iter,amp_scaler,
 
     return outputs
 
-def train_LRA(model, optimizer, lr_scheduler, ds_iter, amp_scaler,
+def train_LRA(model, optimizer, lr_scheduler, train_ds, dev_ds, accelerator,
               training_config, summary, writer):
 
-    accumu_steps = training_config['accumu_steps']
     checkpoint_path = training_config['checkpoint_path']
     # best_dev_loss = float(1e10)
     best_dev_accu = 0
@@ -140,18 +99,15 @@ def train_LRA(model, optimizer, lr_scheduler, ds_iter, amp_scaler,
 
     model.train()
     for train_step_idx in range(total_step):
-        outputs = step_LRA(model, optimizer, lr_scheduler, ds_iter,amp_scaler,
-                           accumu_steps, init_t, summary, component='train', step_idx=train_step_idx,writer=writer)
+        outputs = step_LRA(model, optimizer, lr_scheduler, train_ds, accelerator,
+                           init_t, summary, component='train', step_idx=train_step_idx, writer=writer)
 
         if (train_step_idx + 1) % training_config["eval_frequency"] == 0:
             print_summary(summary["train"], False, model, checkpoint_path)
             model.eval()
             for dev_step_idx in range(training_config["num_eval_steps"]):
-                outputs = step_LRA(model, optimizer, lr_scheduler, ds_iter,amp_scaler,
-                                   accumu_steps, init_t, summary, component='dev', step_idx=dev_step_idx)
-            # dev_loss = np.mean(summary["dev"]["loss"])
-            # if  dev_loss < best_dev_loss:
-            #     best_dev_loss = dev_loss
+                outputs = step_LRA(model, optimizer, lr_scheduler, dev_ds, accelerator,
+                                   init_t, summary, component='dev', step_idx=dev_step_idx)
             dev_accu = np.mean(summary["dev"]["accu"])
             if dev_accu > best_dev_accu:
                 best_dev_accu = dev_accu
@@ -163,24 +119,18 @@ def train_LRA(model, optimizer, lr_scheduler, ds_iter, amp_scaler,
             model.train()
 
 
-
-
-
     print('total training step (k): {}'.format(total_step/1000.0))
     print("total training time (s): {}".format(int(time.time()-init_t)))
     print("peak memory usage (MB): {}".format(torch.cuda.memory_stats()['active_bytes.all.peak']>>20))
 
 
-def eval_LRA(model, optimizer, lr_scheduler, ds_iter, amp_scaler,
-             training_config, summary):
-    accumu_steps = training_config['accumu_steps']
-    checkpoint_path = training_config['checkpoint_path']
+def eval_LRA(model, optimizer, lr_scheduler, eval_ds, accelerator, summary, checkpoint_path): 
     init_t = time.time()
     model.eval()
     try:
         for test_step_idx in itertools.count():
-            outputs = step_LRA(model, optimizer, lr_scheduler, ds_iter,amp_scaler,
-                               accumu_steps, init_t, summary, component='test', step_idx=test_step_idx)
+            outputs = step_LRA(model, optimizer, lr_scheduler, eval_ds, accelerator,
+                               init_t, summary, component='test', step_idx=test_step_idx)
     except StopIteration:
         print_summary(summary["test"], False, model, checkpoint_path)
 
@@ -242,6 +192,14 @@ def main():
     torch.backends.cudnn.deterministic = True
 
 
+    accumu_steps = model_config["bz_rate"] if "bz_rate" in model_config else 1
+    mixed_precision = "bf16" if model_config.get("mixed_precision") else "no"
+    print(f"Gradient Accumulation Steps: {accumu_steps}")
+    print(f"Mixed Precision: {mixed_precision}")
+    # device_ids = list(range(torch.cuda.device_count()))
+    accelerator = Accelerator(gradient_accumulation_steps=accumu_steps,
+                              mixed_precision=mixed_precision)
+
 
     ### model preparation ###
     if args.task == "lra-retrieval":
@@ -260,17 +218,11 @@ def main():
         model.load_state_dict(checkpoint["model_state_dict"])
         print("model loaded from: " + checkpoint_path)
 
-
-    model = model.cuda()
+    device = accelerator.device
+    model.to(device)
     print(model)
     print(f"parameter_size: {[weight.size() for weight in model.parameters()]}", flush = True)
     print(f"num_parameter: {np.sum([np.prod(weight.size()) for weight in model.parameters()])}", flush = True)
-
-
-    device_ids = list(range(torch.cuda.device_count()))
-    # print(f"GPU list: {device_ids}")
-    # model = nn.DataParallel(model, device_ids = device_ids)
-
 
 
     ### data preparation ###
@@ -288,7 +240,6 @@ def main():
         lr = training_config["learning_rate"],
         betas = (0.9, 0.999), eps = 1e-6, weight_decay = training_config["weight_decay"]
     )
-
     lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer = optimizer,
         max_lr = training_config["learning_rate"],
@@ -296,30 +247,20 @@ def main():
         anneal_strategy = training_config["lr_decay"],
         total_steps = training_config["num_train_steps"]
     )
-
-    amp_scaler = torch.cuda.amp.GradScaler() if model_config["mixed_precision"] else None
-
-
-    # accumu_steps = max(training_config["batch_size"] // len(device_ids) // model_config["gpu_memory"], 1)
-    accumu_steps = model_config["bz_rate"] if "bz_rate" in model_config else 1
-    # accumu_steps = 1
-    print(f"accumu_steps={accumu_steps}")
-    training_config['accumu_steps'] = accumu_steps
-
-
+    model, optimizer, train_dataloader, dev_dataloader, test_dataloader, lr_scheduler = accelerator.prepare(
+        model, optimizer, ds_iter["train"], ds_iter["dev"], ds_iter["test"], lr_scheduler
+    )
 
     ### train ###
     if args.mode == 'train':
-        train_LRA(model, optimizer, lr_scheduler, ds_iter, amp_scaler,
-                  training_config, summary, writer)
+        train_LRA(model, optimizer, lr_scheduler, train_dataloader, dev_dataloader, accelerator, training_config, summary, writer)
 
     ### eval ###
     if os.path.exists(checkpoint_path) and checkpoint_path != './checkpoints/test.model':
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint["model_state_dict"])
         print("loading the best model from: " + checkpoint_path)
-    eval_LRA(model, optimizer, lr_scheduler, ds_iter, amp_scaler,
-             training_config, summary)
+    eval_LRA(model, optimizer, lr_scheduler, test_dataloader, accelerator, training_config, summary, checkpoint_path=training_config['checkpoint_path'])
 
 
 

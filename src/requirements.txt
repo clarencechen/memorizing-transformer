@@ -1,12 +1,15 @@
-torch==1.8.0
+torch
 transformers==4.5.0
 performer-pytorch
 tensorboard
+accelerate
 axial_positional_embedding
+memorizing-transformers-pytorch
 local-attention
 fsspec
 wrapt
 opt_einsum
+einops_exts
 gast
 astunparse
 psutil

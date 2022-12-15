@@ -40,7 +40,6 @@ class ModelForSC(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        self.enable_amp = config["mixed_precision"]
         self.pooling_mode = config["pooling_mode"]
         self.vocab_size = config["vocab_size"]
 
@@ -50,18 +49,16 @@ class ModelForSC(nn.Module):
 
     def forward(self, input_ids_0, mask_0, label):
 
-        with torch.cuda.amp.autocast(enabled = self.enable_amp):
+        if self.pooling_mode == "CLS":
+            input_ids_0, mask_0 = append_cls(input_ids_0, mask_0, self.vocab_size)
 
-            if self.pooling_mode == "CLS":
-                input_ids_0, mask_0 = append_cls(input_ids_0, mask_0, self.vocab_size)
-
-            token_out = self.model(input_ids_0, mask_0)
-            seq_scores = self.seq_classifer(token_out)
-            seq_loss = torch.nn.CrossEntropyLoss(reduction = "none")(seq_scores, label)
-            seq_accu = (seq_scores.argmax(dim = -1) == label).to(torch.float32)
-            outputs = {}
-            outputs["loss"] = seq_loss
-            outputs["accu"] = seq_accu
+        token_out = self.model(input_ids_0, mask_0)
+        seq_scores = self.seq_classifer(token_out)
+        seq_loss = torch.nn.CrossEntropyLoss(reduction = "none")(seq_scores, label)
+        seq_accu = (seq_scores.argmax(dim = -1) == label).to(torch.float32)
+        outputs = {}
+        outputs["loss"] = seq_loss
+        outputs["accu"] = seq_accu
 
         return outputs
 
