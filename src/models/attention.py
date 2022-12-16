@@ -13,7 +13,12 @@ def attn_selector(attn_type, config, W_q=None, W_k=None, W_v=None):
         attn = SoftmaxAttention(config)
     elif attn_type.startswith("kernelized"):
         attn = SoftmaxAttention_RBF(config)
-
+    elif attn_type.startswith("memorizing"):
+        from memorizing_transformers_pytorch import KNNAttention
+        attn = KNNAttention(
+            dim=config["transformer_dim"], dim_head=config["head_dim"], heads=config["num_head"],
+            dropout=config["attention_dropout"], num_retrieved_memories=config["num_retrieved_memories"]
+        )
     elif attn_type.startswith("linformer"):
         from models.attention_linformer import LinformerAttention
         attn = LinformerAttention(config)

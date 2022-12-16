@@ -63,10 +63,25 @@ class TransformerLayer(nn.Module):
             torch.nn.Dropout(p = config["dropout_prob"])
         )
 
-    def forward(self, X, mask):
-        X = self.dropout1(self.mha(self.norm1(X), mask)) + X
+    def forward(self, X, mask, knn_memories=None, add_knn_memory=True):
+        attn_kwargs = {}
+        if knn_memories is not None:
+            attn_kwargs = {'knn_memory': knn_memories, 'add_knn_memory': add_knn_memory}
+        X = self.dropout1(self.mha(self.norm1(X), mask, **attn_kwargs)) + X
         X = self.mlpblock(self.norm2(X)) + X
         return X
+
+def compute_batch_indices_to_clear(x, token_id):
+    """ clears the KNN memories based on if the batch row contains the specified token id """
+    """ for auto-clearing KNN memories based on start and end of strings """
+
+    clear_memory = (x == token_id).any(dim = -1)
+    batch_indices, _ = clear_memory.nonzero(as_tuple = True)
+    batch_indices_to_clear = batch_indices.tolist()
+
+    if len(batch_indices_to_clear) == 0:
+        return
+    return batch_indices_to_clear
 
 class Model(nn.Module):
     def __init__(self, config):
@@ -85,19 +100,36 @@ class Model(nn.Module):
 
         self.norm = nn.LayerNorm(config["transformer_dim"])
 
-    def forward(self, input_ids, mask = None):
+        if config["attn_type"].startswith("memorizing"):            
+            # memory layer shifting from a little known paper https://arxiv.org/abs/2012.15688
+            self.shift_knn_memories_down = config["shift_knn_memories_down"]
+
+    def forward(self, input_ids, mask = None, knn_memories = None, add_knn_memory = True):
 
         X = self.embeddings(input_ids)
 
         if mask is None:
             mask = torch.ones_like(input_ids)
 
+        knn_memories_iter = None
+        if knn_memories is not None:
+            batch_size = input_ids.shape[0]
+            # validate KNN memories to have enough indices for batch size
+            assert all([memory.num_indices == batch_size for memory in knn_memories]), f'you passed in an input with batch size {batch_size} but your memories were not instantiated with that number of KNN indices'
+            # shifting memories a number of layers down, little known technique shown to enhance memories from Ernie-Doc paper
+            if len(knn_memories) > 0 and self.shift_knn_memories_down > 0:
+                knn_memories = [*knn_memories[self.shift_knn_memories_down:], *knn_memories[:self.shift_knn_memories_down]]
+            # iterate through the memories in order of the ascending layers that contain KNNAttention
+            knn_memories_iter = iter(knn_memories)
+
         if self.tied_weights:
             for idx in range(self.num_layers):
-                X = self.transformer(X, mask)
+                layer_memories = None if knn_memories_iter is None else next(knn_memories_iter)
+                X = self.transformer(X, mask, knn_memories=layer_memories, add_knn_memory=add_knn_memory)
         else:
             for idx in range(self.num_layers):
-                X = getattr(self, f"transformer_{idx}")(X, mask)
+                layer_memories = None if knn_memories_iter is None else next(knn_memories_iter)
+                X = getattr(self, f"transformer_{idx}")(X, mask, knn_memories=layer_memories, add_knn_memory=add_knn_memory)
 
 
         X = self.norm(X) * mask[:, :, None]
