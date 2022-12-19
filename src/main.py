@@ -12,10 +12,11 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from accelerate import Accelerator
 
 from utils import redirect_stdout
 from config import Config
-from models.model_LRA import ModelForSC, ModelForSCDual
+from models.model_LRA import ModelForSC
 from models.dataset_LRA import LRADataset
 
 
@@ -141,7 +142,7 @@ def get_args():
     parser.add_argument("--checkpoint", type = str, default="test",
                         help="load ./checkpoints/model_name.model to evaluation")
     parser.add_argument("--attn", type = str, default="softmaxQKV",
-                        help = "softmax, nystrom, linformer, informer, performer, bigbird, sketched, skeinb,skein, skein0, skeini")
+                        help = "softmax, nystrom, linformer, informer, performer, bigbird, sketched, skeinb,skein, skein0, skeini, memorizing")
     parser.add_argument("--task", type = str, default="lra-listops",
                         help = "lra-listops, lra-retrieval, lra-text, lra-pathfinder32-curv_contour_length_14")
     parser.add_argument('--random', type=int, default=42)
@@ -193,7 +194,7 @@ def main():
 
 
     accumu_steps = model_config["bz_rate"] if "bz_rate" in model_config else 1
-    mixed_precision = "bf16" if model_config.get("mixed_precision") else "no"
+    mixed_precision = "fp16" if model_config.get("mixed_precision") else "no"
     print(f"Gradient Accumulation Steps: {accumu_steps}")
     print(f"Mixed Precision: {mixed_precision}")
     # device_ids = list(range(torch.cuda.device_count()))
@@ -202,10 +203,7 @@ def main():
 
 
     ### model preparation ###
-    if args.task == "lra-retrieval":
-        model = ModelForSCDual(model_config)
-    else:
-        model = ModelForSC(model_config)
+    model = ModelForSC(model_config, batch_size=training_config["batch_size"], dual_input=(args.task == "lra-retrieval"))
 
 
     checkpoint_dir = './checkpoints-{}'.format(args.random)
