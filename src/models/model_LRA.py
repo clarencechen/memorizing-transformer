@@ -53,6 +53,8 @@ class ModelForSC(nn.Module):
         self.model = Model(config)
 
         self.seq_classifer = SCHeadDual(config) if dual_input else SCHead(config)
+        self.knn_memories = None
+        self.num_recursive_segments = math.ceil(config["max_seq_len"] / config["segment_len"])
         if config["attn_type"].startswith("memorizing"):
             assert isinstance(batch_size, int), "Batch size must be provided to instantiate KNN Memories for Memorizing Transformer"
             self.knn_memories = KNNMemoryList.create_memories(
@@ -69,25 +71,24 @@ class ModelForSC(nn.Module):
             if self.dual_input and input_ids_1 is not None and mask_1 is not None:
                 input_ids_1, mask_1 = append_cls(input_ids_1, mask_1, self.vocab_size)
 
-        if config["attn_type"].startswith("memorizing"):
-            for input_ids, mask in ((input_ids_0, mask_0), (input_ids_1, mask_1)):
-                token_out = []
-                if input_ids is None and mask is None:
-                    token_out.append(None)
-                    continue
-                token_segments_out = []
-                num_segments = math.ceil(config["max_seq_len"] / config["segment_len"])
-                for seq, mask in zip(input_ids_0.chunk(num_segments, dim=-1), mask_0.chunk(num_segments, dim=-1)):
-                    token_segments_out.append(self.model(seq, mask, knn_memories=self.knn_memories))
-                token_out.append(torch.cat(token_segments_out, dim=-2))
+        if self.knn_memories is not None:
+            token_out_0 = []
+            for seq, mask in zip(input_ids_0.chunk(self.num_recursive_segments, dim=-1), mask_0.chunk(self.num_recursive_segments, dim=-1)):
+                token_out_0.append(self.model(seq, mask, knn_memories=self.knn_memories))
+            self.knn_memories.clear_memory()
+            token_out_0 = torch.cat(token_out_0, dim=-2)
+            if self.dual_input and input_ids_1 is not None and mask_1 is not None:
+                token_out_1 = []
+                for seq, mask in zip(input_ids_1.chunk(self.num_recursive_segments, dim=-1), mask_1.chunk(self.num_recursive_segments, dim=-1)):
+                    token_out_1.append(self.model(seq, mask, knn_memories=self.knn_memories))
                 self.knn_memories.clear_memory()
-            token_out_0, token_out_1 = token_out
+                token_out_1 = torch.cat(token_out_1, dim=-2)
         else:
             token_out_0 = self.model(input_ids_0, mask_0)
             if self.dual_input and input_ids_1 is not None and mask_1 is not None:
                 token_out_1 = self.model(input_ids_1, mask_1)
 
-        if self.dual_input and token_out_1 is not None:
+        if self.dual_input:
             seq_scores = self.seq_classifer(token_out_0, token_out_1)
         else:
             seq_scores = self.seq_classifer(token_out_0)

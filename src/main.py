@@ -11,7 +11,6 @@ import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 from accelerate import Accelerator
 
 from utils import redirect_stdout
@@ -46,19 +45,18 @@ def print_summary(summary, save_if_improved, model, checkpoint_path):
     summary["accu"] = []
 
 def step_LRA(model, optimizer, lr_scheduler, ds_iter, accelerator,
-             init_t, summary, component, step_idx, writer=None):
+             init_t, summary, component, step_idx):
 
     t0 = time.time()
     optimizer.zero_grad()
 
-    _, batch = next(ds_iter)
+    batch = next(ds_iter)
     batch_size = batch[list(batch.keys())[0]].size(0)
 
     if component == "train":
         with accelerator.accumulate(model):
             outputs = model(**batch)
-            outputs["loss"] += loss.item()
-            accelerator.backwards(loss)
+            accelerator.backward(outputs["loss"].mean())
             accelerator.clip_grad_value_(model.parameters(), clip_value=1) # Gradient Clipping
 
             optimizer.step()
@@ -71,25 +69,23 @@ def step_LRA(model, optimizer, lr_scheduler, ds_iter, accelerator,
 
     t_escape = t1 - t0
     learning_rate = optimizer.param_groups[0]["lr"]
-    loss = accelerator.gather_for_metrics(outputs["loss"]).data.item()
-    accu = accelerator.gather_for_metrics(outputs["accu"]).data.item()
+    loss = accelerator.gather_for_metrics(outputs["loss"]).mean().data.item()
+    accu = accelerator.gather_for_metrics(outputs["accu"]).mean().data.item()
     time_since_start = time.time() - init_t
 
     if step_idx%100==0:
-        print(f"step={step_idx}, tt={time_since_start:.1f}, t={t_escape:.3f}, bs={batch_size}, lr={learning_rate:.6f}, loss={loss:.4f}, accu={accu:.4f}\t\t\t\t", end = "\r", flush = True)
+        accelerator.print(f"step={step_idx}, tt={time_since_start:.1f}, t={t_escape:.3f}, bs={batch_size}, lr={learning_rate:.6f}, loss={loss:.4f}, accu={accu:.4f}\t\t\t\t", end = "\r", flush = True)
+
 
     summary[component]["t"] += t_escape
     summary[component]["loss"].append(loss)
     summary[component]["accu"].append(accu)
 
-    if writer is not None:
-        writer.add_scalar('loss', loss, step_idx)
-        writer.add_scalar('accu', accu, step_idx)
-
+    accelerator.log({"loss": loss, "accuracy": accu, "t": t_escape}, step=step_idx)
     return outputs
 
-def train_LRA(model, optimizer, lr_scheduler, train_ds, dev_ds, accelerator,
-              training_config, summary, writer):
+def train_LRA(model, optimizer, lr_scheduler, train_ds, dev_ds,
+              accelerator, training_config, summary):
 
     checkpoint_path = training_config['checkpoint_path']
     # best_dev_loss = float(1e10)
@@ -101,7 +97,7 @@ def train_LRA(model, optimizer, lr_scheduler, train_ds, dev_ds, accelerator,
     model.train()
     for train_step_idx in range(total_step):
         outputs = step_LRA(model, optimizer, lr_scheduler, train_ds, accelerator,
-                           init_t, summary, component='train', step_idx=train_step_idx, writer=writer)
+                           init_t, summary, component='train', step_idx=train_step_idx)
 
         if (train_step_idx + 1) % training_config["eval_frequency"] == 0:
             print_summary(summary["train"], False, model, checkpoint_path)
@@ -113,16 +109,17 @@ def train_LRA(model, optimizer, lr_scheduler, train_ds, dev_ds, accelerator,
             if dev_accu > best_dev_accu:
                 best_dev_accu = dev_accu
                 if (train_step_idx + 1) > total_step * 0.2:
-                    torch.save({"model_state_dict":model.state_dict()}, checkpoint_path)
-                    print('best model saved: step = ',train_step_idx, 'dev accu = ',dev_accu)
+                    accelerator.wait_for_everyone()
+                    accelerator.save({"model_state_dict":accelerator.get_state_dict(model)}, checkpoint_path)
+                    accelerator.print('best model saved: step = ',train_step_idx, 'dev accu = ',dev_accu)
 
             print_summary(summary["dev"], True, model, checkpoint_path)
             model.train()
 
 
-    print('total training step (k): {}'.format(total_step/1000.0))
-    print("total training time (s): {}".format(int(time.time()-init_t)))
-    print("peak memory usage (MB): {}".format(torch.cuda.memory_stats()['active_bytes.all.peak']>>20))
+    accelerator.print('total training step (k): {}'.format(total_step/1000.0))
+    accelerator.print("total training time (s): {}".format(int(time.time()-init_t)))
+    accelerator.print("peak memory usage (MB): {}".format(torch.cuda.memory_stats()['active_bytes.all.peak']>>20))
 
 
 def eval_LRA(model, optimizer, lr_scheduler, eval_ds, accelerator, summary, checkpoint_path): 
@@ -181,7 +178,6 @@ def main():
         component:{"t":0, "loss":[], "accu":[], "best_accu":0, "component":component}
         for component in ["train", "dev", "test"]
     }
-    writer = SummaryWriter(os.path.join(log_dir,'{}.tensorboard'.format(args.checkpoint)))
 
     print(json.dumps([model_config, training_config], indent = 4))
 
@@ -199,7 +195,9 @@ def main():
     print(f"Mixed Precision: {mixed_precision}")
     # device_ids = list(range(torch.cuda.device_count()))
     accelerator = Accelerator(gradient_accumulation_steps=accumu_steps,
-                              mixed_precision=mixed_precision)
+                              mixed_precision=mixed_precision,
+                              log_with=["tensorboard"],
+                              logging_dir=os.path.join(log_dir,'{}.tensorboard'.format(args.checkpoint)))
 
 
     ### model preparation ###
@@ -216,8 +214,7 @@ def main():
         model.load_state_dict(checkpoint["model_state_dict"])
         print("model loaded from: " + checkpoint_path)
 
-    device = accelerator.device
-    model.to(device)
+    model = accelerator.prepare(model)
     print(model)
     print(f"parameter_size: {[weight.size() for weight in model.parameters()]}", flush = True)
     print(f"num_parameter: {np.sum([np.prod(weight.size()) for weight in model.parameters()])}", flush = True)
@@ -225,10 +222,10 @@ def main():
 
     ### data preparation ###
 
-    ds_iter = {
-        "train":enumerate(DataLoader(LRADataset(f"./data/lra_processed/{args.task}.train.pickle", True), batch_size = training_config["batch_size"], drop_last = True)),
-        "dev":enumerate(DataLoader(LRADataset(f"./data/lra_processed/{args.task}.dev.pickle", True), batch_size = training_config["batch_size"], drop_last = True)),
-        "test":enumerate(DataLoader(LRADataset(f"./data/lra_processed/{args.task}.test.pickle", False), batch_size = training_config["batch_size"], drop_last = True)),
+    dataloaders = {
+        "train":DataLoader(LRADataset(f"./data/lra_processed/{args.task}.train.pickle", True), batch_size = training_config["batch_size"], drop_last = True),
+        "dev":DataLoader(LRADataset(f"./data/lra_processed/{args.task}.dev.pickle", True), batch_size = training_config["batch_size"], drop_last = True),
+        "test":DataLoader(LRADataset(f"./data/lra_processed/{args.task}.test.pickle", False), batch_size = training_config["batch_size"], drop_last = True),
     }
 
     ### training preparation ###
@@ -245,20 +242,26 @@ def main():
         anneal_strategy = training_config["lr_decay"],
         total_steps = training_config["num_train_steps"]
     )
-    model, optimizer, train_dataloader, dev_dataloader, test_dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, ds_iter["train"], ds_iter["dev"], ds_iter["test"], lr_scheduler
+    optimizer, dataloaders["train"], dataloaders["dev"], dataloaders["test"], lr_scheduler = accelerator.prepare(
+        optimizer, dataloaders["train"], dataloaders["dev"], dataloaders["test"], lr_scheduler
     )
+    data_iters = {k: iter(dataloader) for k, dataloader in dataloaders.items()}
+    
 
     ### train ###
     if args.mode == 'train':
-        train_LRA(model, optimizer, lr_scheduler, train_dataloader, dev_dataloader, accelerator, training_config, summary, writer)
+        accelerator.init_trackers(project_name=f"{args.task}-{args.attn}-{args.checkpoint}",
+                                  config=training_config,
+                                  init_kwargs={"run_name": f"run-{args.random}"})
+        train_LRA(model, optimizer, lr_scheduler, data_iters["train"], data_iters["dev"], accelerator, training_config, summary)
+        accelerator.end_training()
 
     ### eval ###
     if os.path.exists(checkpoint_path) and checkpoint_path != './checkpoints/test.model':
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint["model_state_dict"])
         print("loading the best model from: " + checkpoint_path)
-    eval_LRA(model, optimizer, lr_scheduler, test_dataloader, accelerator, training_config, summary, checkpoint_path=training_config['checkpoint_path'])
+    eval_LRA(model, optimizer, lr_scheduler, data_iters["test"], accelerator, training_config, summary, checkpoint_path=training_config['checkpoint_path'])
 
 
 
