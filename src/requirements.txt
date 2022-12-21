@@ -8,9 +8,9 @@ memorizing-transformers-pytorch
 local-attention
 fsspec
 wrapt
-opt_einsum
-einops_exts
+einops
 gast
 astunparse
 psutil
-einops
+faiss-gpu
+joblib

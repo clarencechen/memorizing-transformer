@@ -66,7 +66,7 @@ class TransformerLayer(nn.Module):
     def forward(self, X, mask, knn_memories=None, add_knn_memory=True):
         attn_kwargs = {}
         if knn_memories is not None:
-            attn_kwargs = {'knn_memory': knn_memories, 'add_knn_memory': add_knn_memory}
+            attn_kwargs = {'knn_memories': knn_memories, 'add_knn_memory': add_knn_memory}
         X = self.dropout1(self.mha(self.norm1(X), mask, **attn_kwargs)) + X
         X = self.mlpblock(self.norm2(X)) + X
         return X

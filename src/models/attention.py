@@ -14,7 +14,7 @@ def attn_selector(attn_type, config, W_q=None, W_k=None, W_v=None):
     elif attn_type.startswith("kernelized"):
         attn = SoftmaxAttention_RBF(config)
     elif attn_type.startswith("memorizing"):
-        from memorizing_transformers_pytorch import KNNAttention
+        from models.attention_memorizing import KNNAttention
         attn = KNNAttention(
             dim=config["transformer_dim"], dim_head=config["head_dim"], heads=config["num_head"],
             dropout=config["attention_dropout"], num_retrieved_memories=config["num_retrieved_memories"]
@@ -110,10 +110,13 @@ class Attention(nn.Module):
         self.num_head = config["num_head"]
 
         self.attn_type = config["attn_type"]
+        self.use_shared_kv = self.attn_type.startswith("memorizing")
 
         self.W_q = nn.Linear(self.dim, self.num_head * self.head_dim)
-        self.W_k = nn.Linear(self.dim, self.num_head * self.head_dim)
-        self.W_v = nn.Linear(self.dim, self.num_head * self.head_dim)
+
+        # KNN Attention uses shared keys and values across heads
+        self.W_k = nn.Linear(self.dim, self.head_dim if self.use_shared_kv else self.num_head * self.head_dim)
+        self.W_v = nn.Linear(self.dim, self.head_dim if self.use_shared_kv else self.num_head * self.head_dim)
 
         self.attn = attn_selector(self.attn_type, config, self.W_q, self.W_k, self.W_v)
 
@@ -121,20 +124,24 @@ class Attention(nn.Module):
 
         self.ff = nn.Linear(self.num_head * self.head_dim, self.dim)
 
-    def forward(self, X, mask):
+    def forward(self, X, mask, knn_memories=None, add_knn_memory=True):
 
         if self.attn_type.startswith("longformer") or self.attn_type.startswith("reformer"):
             with torch.cuda.amp.autocast(enabled = False):
                 attn_out = self.attn(X.float(), mask.float())
         else:
             Q = self.split_heads(self.W_q(X))
-            K = self.split_heads(self.W_k(X))
-            V = self.split_heads(self.W_v(X))
+            K = self.W_k(X) if self.use_shared_kv else self.split_heads(self.W_k(X))
+            V = self.W_v(X) if self.use_shared_kv else self.split_heads(self.W_v(X))
             with torch.cuda.amp.autocast(enabled = False):
+                args = [Q.float(), K.float(), V.float(), mask.float()]
+                kwargs = {}
+                if self.attn_type.startswith("memorizing") and knn_memories is not None:
+                    kwargs = {"knn_memory": knn_memories, "add_knn_memory": add_knn_memory}
                 if self.grad_checkpointing:
-                    attn_out = checkpoint(self.attn, Q.float(), K.float(), V.float(), mask.float())
+                    attn_out = checkpoint(self.attn, *args, **kwargs)
                 else:
-                    attn_out = self.attn(Q.float(), K.float(), V.float(), mask.float())
+                    attn_out = self.attn(*args, **kwargs)
             attn_out = self.combine_heads(attn_out)
         out = self.ff(attn_out)
 
