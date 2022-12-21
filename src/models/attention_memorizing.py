@@ -27,14 +27,11 @@ class KNNAttention(nn.Module):
         dim_head = 64,
         dropout = 0.,
         num_retrieved_memories = 32,
-        xl_max_memories = 0.,
         attn_scale_init = 20,
     ):
         super().__init__()
         self.heads = heads
         self.scale = nn.Parameter(torch.ones(heads, 1, 1) * math.log(attn_scale_init))
-
-        self.xl_max_memories = xl_max_memories
 
         self.num_retrieved_memories = num_retrieved_memories
 
@@ -44,7 +41,6 @@ class KNNAttention(nn.Module):
     def forward(
         self, q, k, v, mask, *,
         knn_memory,
-        xl_memory = None,
         add_knn_memory = True,
         rel_pos_bias = None,
         use_causal_mask = False
@@ -53,13 +49,6 @@ class KNNAttention(nn.Module):
         # we'll just go with full cosine sim attention https://arxiv.org/abs/2010.04245
 
         q, k = map(l2norm, (q, k))
-
-        # handle xl memory
-
-        if exists(xl_memory):
-            k_xl_mem, v_xl_mem = xl_memory.unbind(dim = -2)
-            k = torch.cat((k_xl_mem, k), dim = -2)
-            v = torch.cat((v_xl_mem, v), dim = -2)
 
         # calculate local attention
 
@@ -85,19 +74,10 @@ class KNNAttention(nn.Module):
         sim_mem = einsum('b h i d, b h i j d -> b h i j', q, mem_k) * scale
         sim_mem = sim_mem.masked_fill(~mem_mask, mask_value)
 
-        # calculate new XL memories, as well as memories to be discarded
-
         new_kv_memories = torch.stack((k, v), dim = -2).detach()
 
-        if self.xl_max_memories > 0:
-            new_kv_memories_discarded, new_xl_kv_memories = new_kv_memories[:, :-self.xl_max_memories], new_kv_memories[:, -self.xl_max_memories:]
-        else:
-            new_kv_memories_discarded, new_xl_kv_memories = new_kv_memories, None
-
-        # add memories to be discarded into KNN memory
-
-        if add_knn_memory and new_kv_memories_discarded.numel() > 0:
-            knn_memory.add(new_kv_memories_discarded)
+        if add_knn_memory and new_kv_memories.numel() > 0:
+            knn_memory.add(new_kv_memories)
 
         # attention (combining local and distant)
 
