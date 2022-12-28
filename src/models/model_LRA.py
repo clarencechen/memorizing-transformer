@@ -93,7 +93,7 @@ class ModelForSC(nn.Module):
             seq_scores = self.seq_classifer(token_out_0, token_out_1)
         else:
             seq_scores = self.seq_classifer(token_out_0)
-        seq_loss = torch.nn.CrossEntropyLoss(reduction = "none")(seq_scores, label)
+        seq_loss = torch.nn.CrossEntropyLoss(reduction = "none")(seq_scores, label.squeeze())
         seq_accu = (seq_scores.argmax(dim = -1) == label).to(torch.float32)
         outputs = {}
         outputs["loss"] = seq_loss

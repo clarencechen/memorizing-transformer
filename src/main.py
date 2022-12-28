@@ -12,15 +12,12 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
+from tfrecord.torch import TFRecordDataset
 
 from utils import redirect_stdout
 from config import Config
 from models.model_LRA import ModelForSC
-from models.dataset_LRA import LRADataset
-
-
-
-
+from models.dataset_LRA import decode_record, cycle
 
 
 def print_summary(summary, save_if_improved, model, checkpoint_path):
@@ -221,11 +218,20 @@ def main():
 
 
     ### data preparation ###
+    task_description = {"input_ids_0": "int", "label": "int"}
+    if args.task == "lra-retrieval":
+        task_description.update({"input_ids_1": "int"})
 
+    train_ds = TFRecordDataset(f"./data/lra_processed/{args.task}.train.tfrecord", index_path=None,
+                               description=task_description, transform=decode_record, shuffle_queue_size=4096)
+    dev_ds = TFRecordDataset(f"./data/lra_processed/{args.task}.dev.tfrecord", index_path=None,
+                             description=task_description, transform=decode_record)
+    test_ds = TFRecordDataset(f"./data/lra_processed/{args.task}.test.tfrecord", index_path=None,
+                              description=task_description, transform=decode_record)
     dataloaders = {
-        "train":DataLoader(LRADataset(f"./data/lra_processed/{args.task}.train.pickle", True), batch_size = training_config["batch_size"], drop_last = True),
-        "dev":DataLoader(LRADataset(f"./data/lra_processed/{args.task}.dev.pickle", True), batch_size = training_config["batch_size"], drop_last = True),
-        "test":DataLoader(LRADataset(f"./data/lra_processed/{args.task}.test.pickle", False), batch_size = training_config["batch_size"], drop_last = True),
+        "train": DataLoader(train_ds, batch_size=training_config["batch_size"], pin_memory=True, drop_last=True),
+        "dev": DataLoader(dev_ds, batch_size=training_config["batch_size"], pin_memory=True, drop_last=True),
+        "test": DataLoader(test_ds, batch_size=training_config["batch_size"], pin_memory=True, drop_last=True),
     }
 
     ### training preparation ###
@@ -245,15 +251,15 @@ def main():
     optimizer, dataloaders["train"], dataloaders["dev"], dataloaders["test"], lr_scheduler = accelerator.prepare(
         optimizer, dataloaders["train"], dataloaders["dev"], dataloaders["test"], lr_scheduler
     )
-    data_iters = {k: iter(dataloader) for k, dataloader in dataloaders.items()}
-    
 
     ### train ###
     if args.mode == 'train':
         accelerator.init_trackers(project_name=f"{args.task}-{args.attn}-{args.checkpoint}",
                                   config=training_config,
                                   init_kwargs={"run_name": f"run-{args.random}"})
-        train_LRA(model, optimizer, lr_scheduler, data_iters["train"], data_iters["dev"], accelerator, training_config, summary)
+        train_LRA(model, optimizer, lr_scheduler,
+                  cycle(iter(dataloaders["train"])), cycle(iter(dataloaders["dev"])),
+                  accelerator, training_config, summary)
         accelerator.end_training()
 
     ### eval ###
@@ -261,7 +267,10 @@ def main():
         checkpoint = torch.load(checkpoint_path)
         model.load_state_dict(checkpoint["model_state_dict"])
         print("loading the best model from: " + checkpoint_path)
-    eval_LRA(model, optimizer, lr_scheduler, data_iters["test"], accelerator, training_config, summary, checkpoint_path=training_config['checkpoint_path'])
+    eval_LRA(model, optimizer, lr_scheduler,
+             iter(dataloader["test"]), accelerator,
+             training_config, summary,
+             checkpoint_path=training_config['checkpoint_path'])
 
 
 

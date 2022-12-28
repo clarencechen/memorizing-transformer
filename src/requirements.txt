@@ -2,6 +2,7 @@ torch>=1.10.0
 transformers==4.5.0
 performer-pytorch
 tensorboard
+tfrecord
 accelerate
 axial_positional_embedding
 memorizing-transformers-pytorch
