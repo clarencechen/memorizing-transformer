@@ -154,7 +154,7 @@ class KNNMemory():
         self.db = np.memmap(memmap_filename, mode = 'w+', dtype = np.float32, shape = self.shape)
         self.knns = [KNN(dim = dim, max_num_entries = max_memories, cap_num_entries = True) for _ in range(num_indices)]
     
-        self.n_jobs = cpu_count() if multiprocessing else 1
+        self.n_jobs = -1 if multiprocessing else 1
 
     def set_scoped_indices(self, indices):
         indices = list(indices)
@@ -201,7 +201,7 @@ class KNNMemory():
             knn.add(key, ids = knn_insert_ids + db_offset)
             return knn
 
-        updated_knns = Parallel(n_jobs = self.n_jobs)(knn_add(*args) for args in zip(knns, keys, db_offsets))
+        updated_knns = Parallel(n_jobs = self.n_jobs, batch_size=16)(knn_add(*args) for args in zip(knns, keys, db_offsets))
         for knn_idx, scoped_idx in enumerate(self.scoped_indices):
             self.knns[scoped_idx] = updated_knns[knn_idx]
 
@@ -238,7 +238,7 @@ class KNNMemory():
         def knn_search(knn, query):
             return knn.search(query, topk, nprobe, increment_hits = increment_hits, increment_age = increment_age)
 
-        fetched_indices = Parallel(n_jobs = self.n_jobs)(knn_search(*args) for args in zip(knns, queries))
+        fetched_indices = Parallel(n_jobs = self.n_jobs, batch_size=16)(knn_search(*args) for args in zip(knns, queries))
 
         # get all the memory key / values from memmap 'database'
         # todo - remove for loop below
