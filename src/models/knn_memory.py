@@ -172,12 +172,12 @@ class KNNMemory():
     def clear(self, batch_indices = None):
         if not exists(batch_indices):
             batch_indices = list(range(self.num_indices))
-
-        batch_indices = cast_list(batch_indices)
-
-        for index in batch_indices:
-            knn = self.knns[index]
-            knn.reset()
+            Parallel(n_jobs = self.n_jobs, batch_size=16)(delayed(lambda knn: knn.reset()) for knn in self.knns)
+        else:
+            batch_indices = cast_list(batch_indices)
+            for index in batch_indices:
+                knn = self.knns[index]
+                knn.reset()
 
         self.db_offsets[batch_indices] = 0
 
