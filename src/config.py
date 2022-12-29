@@ -42,7 +42,7 @@ listops = {
                   "softmax":{"bz_rate":1,},
                   "softmaxRBF32":{"bz_rate":1},
                   "kernelized":{"bz_rate":1},
-                  "memorizing":{"bz_rate":1,"num_retrieved_memories":32,"segment_len":256,"shift_knn_memories_down":0,"knn_memory_multiprocessing":False},
+                  "memorizing":{"bz_rate":1,"num_retrieved_memories":32,"segment_len":256,"shift_knn_memories_down":0,"knn_memory_multiprocessing":True},
 
                   "sketchedRBF32128":{"bz_rate":1, "nb_features":128, "sketched_kernel":"kernel_RS_RBF", "accumulation":1, "sampling_factor":4, "no_projection":False},
                   "skyformer":{"bz_rate":1, "nb_features":128, "sketched_kernel":"kernel_RS_RBF", "accumulation":1, "sampling_factor":4, "no_projection":False},
@@ -89,7 +89,7 @@ pathfinder = {
                "softmax":{"bz_rate":1,},
                "softmaxRBF32":{"bz_rate":1},
                "kernelized":{"bz_rate":1},
-               "memorizing":{"bz_rate":1,"num_retrieved_memories":32,"segment_len":256,"shift_knn_memories_down":0,"knn_memory_multiprocessing":False},
+               "memorizing":{"bz_rate":1,"num_retrieved_memories":32,"segment_len":256,"shift_knn_memories_down":0,"knn_memory_multiprocessing":True},
 
                "sketchedRBF32128":{"bz_rate":1, "nb_features":128, "sketched_kernel":"kernel_RS_RBF", "accumulation":1, "sampling_factor":4, "no_projection":False},
                "skyformer":{"bz_rate":1, "nb_features":128, "sketched_kernel":"kernel_RS_RBF", "accumulation":1, "sampling_factor":4, "no_projection":False},
@@ -141,7 +141,7 @@ retrieval={
                   "softmax":{"bz_rate":1,},
                   "softmaxRBF32":{"bz_rate":2},
                   "kernelized":{"bz_rate":2},
-                  "memorizing":{"bz_rate":1,"num_retrieved_memories":32,"segment_len":256,"shift_knn_memories_down":0,"knn_memory_multiprocessing":False},
+                  "memorizing":{"bz_rate":1,"num_retrieved_memories":32,"segment_len":256,"shift_knn_memories_down":0,"knn_memory_multiprocessing":True},
 
                   "sketchedRBF32128":{"bz_rate":1, "nb_features":128, "sketched_kernel":"kernel_RS_RBF", "accumulation":1, "sampling_factor":4, "no_projection":False},
                   "skyformer":{"bz_rate":1, "nb_features":128, "sketched_kernel":"kernel_RS_RBF", "accumulation":1, "sampling_factor":4, "no_projection":False},
@@ -193,7 +193,7 @@ text={
              "softmax":{"bz_rate":1},
              "softmaxRBF32":{"bz_rate":2},
              "kernelized":{"bz_rate":2},
-             "memorizing":{"bz_rate":1,"num_retrieved_memories":32,"segment_len":256,"shift_knn_memories_down":0,"knn_memory_multiprocessing":False},
+             "memorizing":{"bz_rate":1,"num_retrieved_memories":32,"segment_len":256,"shift_knn_memories_down":0,"knn_memory_multiprocessing":True},
 
              "sketchedRBF32128":{"bz_rate":1, "nb_features":128, "sketched_kernel":"kernel_RS_RBF", "accumulation":1, "sampling_factor":4, "no_projection":False},
              "skyformer":{"bz_rate":1, "nb_features":128, "sketched_kernel":"kernel_RS_RBF", "accumulation":1, "sampling_factor":4, "no_projection":False},
@@ -247,7 +247,7 @@ image={
 
             "softmaxRBF32":{"bz_rate":1}, # for stability
             "kernelized":{"bz_rate":1}, # for stability
-            "memorizing":{"bz_rate":1,"num_retrieved_memories":32,"segment_len":256,"shift_knn_memories_down":0,"knn_memory_multiprocessing":False},
+            "memorizing":{"bz_rate":1,"num_retrieved_memories":32,"segment_len":256,"shift_knn_memories_down":0,"knn_memory_multiprocessing":True},
 
             "sketchedRBF32128":{"bz_rate":1, "nb_features":128, "sketched_kernel":"kernel_RS_RBF", "accumulation":1, "sampling_factor":4, "no_projection":False},
             "skyformer":{"bz_rate":1, "nb_features":128, "sketched_kernel":"kernel_RS_RBF", "accumulation":1, "sampling_factor":4, "no_projection":False},
